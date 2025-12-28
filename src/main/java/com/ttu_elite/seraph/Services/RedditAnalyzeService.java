@@ -72,36 +72,22 @@ public class RedditAnalyzeService {
         List<RedditPost> results = new ArrayList<>();
         List<String> texts = rawPosts.stream().map(p -> (String) p.get("fullText")).toList();
 
-        // MODEL A: Neural (Embedding)
-        Map<String, List<Double>> neuralScores = embeddingRanker.scorePosts(texts);
-
-        // MODEL B: Statistical (BM25)
-        Map<String, List<Double>> bm25Scores = bm25Ranker.scorePosts(texts);
-
-        Set<String> categories = neuralScores.keySet(); // Use Neural keys as master list
+        Map<String, List<Double>> scoresMap = embeddingRanker.scorePosts(texts);
+        Set<String> categories = scoresMap.keySet();
 
         for (int i = 0; i < rawPosts.size(); i++) {
             Map<String, Object> raw = rawPosts.get(i);
             Map<String, Double> postScores = new HashMap<>();
 
+            // 1. Fill Raw Scores (0.0 to 1.0)
             for (String cat : categories) {
-                // Get Score A
-                List<Double> nList = neuralScores.get(cat);
-                double scoreA = (nList != null && i < nList.size()) ? nList.get(i) : 0.0;
-                if (scoreA < SEMANTIC_THRESHOLD) scoreA = 0.0;
-
-                // Get Score B (BM25) - Handle case where BM25 might not have that category key
-                List<Double> bList = bm25Scores.getOrDefault(cat, Collections.emptyList());
-                double scoreB = (bList != null && i < bList.size()) ? bList.get(i) : 0.0;
-
-                // --- ENSEMBLE LOGIC (Weighted Average) ---
-                // 70% Semantic, 30% Keyword
-                double finalScore = (scoreA * 0.7) + (scoreB * 0.3);
-
-                postScores.put(cat, finalScore);
+                List<Double> catScores = scoresMap.get(cat);
+                double score = (catScores != null && i < catScores.size()) ? catScores.get(i) : 0.0;
+                if (score < SEMANTIC_THRESHOLD) score = 0.0;
+                postScores.put(cat, score);
             }
 
-            // Logic: "Normal" Injection (Same as before)
+            // 2. Logic: "Normal" Injection
             double maxRisk = postScores.entrySet().stream()
                     .filter(e -> !e.getKey().equals("FUNCTIONAL_BASELINE"))
                     .mapToDouble(Map.Entry::getValue)
@@ -111,9 +97,13 @@ public class RedditAnalyzeService {
                 postScores.put("FUNCTIONAL_BASELINE", 0.9);
             }
 
-            // Convert to Percent
-            Map<String, Double> percentScores = new HashMap<>();
-            postScores.forEach((k, v) -> percentScores.put(k, v * 100.0));
+            // 3. RENAME AND ROUND (0.288 -> 0.29)
+            Map<String, Double> cleanScores = new HashMap<>();
+            postScores.forEach((k, v) -> {
+                String uiName = getDisplayName(k); // <--- Rename to UI Label
+                double rounded = Math.round(v * 100.0) / 100.0; // <--- Round to 2 decimals
+                cleanScores.put(uiName, rounded);
+            });
 
             RedditPost post = RedditPost.builder()
                     .username(username)
@@ -122,17 +112,18 @@ public class RedditAnalyzeService {
                     .title((String) raw.get("title"))
                     .content((String) raw.get("text"))
                     .createdUtc((Long) raw.get("createdUtc"))
-                    .tokens(toJson(percentScores))
+                    .tokens(toJson(cleanScores)) // Save the clean version
                     .build();
             results.add(post);
         }
         return results;
     }
 
+    // 2. UPDATED: Summary with Renaming and Rounding
     private ProfileAnalysis saveProfileSummary(String username, List<RedditPost> posts) {
         Map<String, Double> totals = new HashMap<>();
 
-        // Aggregate (Sums will now be sums of percentages, e.g. 90.0 + 90.0 = 180.0)
+        // Sum up the CLEAN scores (already renamed)
         for (RedditPost p : posts) {
             try {
                 Map<String, Double> scores = objectMapper.readValue(p.getTokens(), Map.class);
@@ -143,14 +134,18 @@ public class RedditAnalyzeService {
         double totalMass = totals.values().stream().mapToDouble(d -> d).sum();
         Map<String, Double> percentages = new HashMap<>();
 
-        // Calculate relative percentage (0-100 scale)
-        // (Individual Score / Total Mass) * 100
-        totals.forEach((k, v) -> percentages.put(k, totalMass > 0 ? (v / totalMass) * 100.0 : 0.0)); // <--- CONVERT TO PERCENT
+        // Calculate Percentages (0.0 - 1.0) and Round
+        totals.forEach((k, v) -> {
+            double ratio = totalMass > 0 ? (v / totalMass) : 0.0;
+            double rounded = Math.round(ratio * 100.0) / 100.0; // <--- Round to 2 decimals
+            percentages.put(k, rounded);
+        });
 
+        // Determine Top Category (Using UI Names now)
         String topOverall = totals.entrySet().stream()
                 .max(Map.Entry.comparingByValue())
-                .map(e -> e.getValue() > 0 ? e.getKey() : "FUNCTIONAL_BASELINE")
-                .orElse("FUNCTIONAL_BASELINE");
+                .map(e -> e.getValue() > 0 ? e.getKey() : "Sentiment") // Default to Sentiment
+                .orElse("Sentiment");
 
         ProfileAnalysis profile = ProfileAnalysis.builder()
                 .platform("reddit")
@@ -164,6 +159,18 @@ public class RedditAnalyzeService {
                 .build();
 
         return profileRepo.save(profile);
+    }
+
+    // 3. HELPER: The Dictionary (Copy this to bottom of class)
+    private String getDisplayName(String internalKey) {
+        return switch (internalKey) {
+            case "FUNCTIONAL_BASELINE" -> "Sentiment";
+            case "ANXIETY_STRESS" -> "Distress";
+            case "HOSTILITY" -> "Hostility";
+            case "SADNESS" -> "Sadness";
+            case "SELF_HARM_RISK" -> "Self-Harm";
+            default -> internalKey;
+        };
     }
 
     private List<Map<String, Object>> fetchAllPosts(String username, String token) {
@@ -204,5 +211,88 @@ public class RedditAnalyzeService {
 
     private String toJson(Object o) {
         try { return objectMapper.writeValueAsString(o); } catch (Exception e) { return "{}"; }
+    }
+
+    /////////////////////
+    /// ////////////
+    /// ///////
+    //////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+
+    // NEW SIMULATION METHOD
+    public String simulateAnalysis(String mockUsername, List<String> texts) {
+        try {
+            // 1. Convert simple strings to the Map structure the pipeline expects
+            List<Map<String, Object>> mockPosts = new ArrayList<>();
+            long fakeTime = Instant.now().getEpochSecond();
+
+            for (int i = 0; i < texts.size(); i++) {
+                Map<String, Object> p = new HashMap<>();
+                p.put("postId", "sim_" + i);
+                p.put("title", "Simulation Post " + (i + 1));
+                p.put("text", texts.get(i));
+                p.put("fullText", texts.get(i)); // The text you sent
+                p.put("permalink", "https://localhost/simulation");
+                p.put("createdUtc", fakeTime - (i * 86400)); // Each post 1 day apart
+                mockPosts.add(p);
+            }
+
+            // 2. RUN THE EXACT SAME AI PIPELINE
+            List<RedditPost> analyzedPosts = runSemanticAnalysis(mockUsername, mockPosts);
+
+            // 3. Generate Summary (Don't save to DB to keep production clean)
+            ProfileAnalysis summary = generateTransientSummary(mockUsername, analyzedPosts);
+
+            // 4. Return Result
+            return objectMapper.writeValueAsString(new AnalysisResult(summary, analyzedPosts));
+
+        } catch (Exception e) {
+            log.error("Simulation Failed", e);
+            return "{\"error\": \"" + e.getMessage() + "\"}";
+        }
+    }
+
+    // Helper to generate summary without saving to DB
+    private ProfileAnalysis generateTransientSummary(String username, List<RedditPost> posts) {
+        Map<String, Double> totals = new HashMap<>();
+        for (RedditPost p : posts) {
+            try {
+                Map<String, Double> scores = objectMapper.readValue(p.getTokens(), Map.class);
+                scores.forEach((cat, score) -> totals.merge(cat, score, Double::sum));
+            } catch (Exception ignored) {}
+        }
+
+        double totalMass = totals.values().stream().mapToDouble(d -> d).sum();
+        Map<String, Double> percentages = new HashMap<>();
+        totals.forEach((k, v) -> {
+            double ratio = totalMass > 0 ? (v / totalMass) : 0.0;
+            percentages.put(k, Math.round(ratio * 100.0) / 100.0);
+        });
+
+        String topOverall = totals.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(e -> e.getValue() > 0 ? e.getKey() : "Sentiment")
+                .orElse("Sentiment");
+
+        return ProfileAnalysis.builder()
+                .platform("simulation")
+                .username(username)
+                .postCount(posts.size())
+                .topCategoryOverall(topOverall)
+                .confidence(1.0)
+                .profileTotalsJson(toJson(totals))
+                .profilePercentagesJson(toJson(percentages))
+                .createdAt(Instant.now())
+                .build();
     }
 }
