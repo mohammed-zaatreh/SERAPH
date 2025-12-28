@@ -8,4 +8,8 @@ import java.util.Optional;
 
 public interface ProfileAnalysisRepository extends JpaRepository<ProfileAnalysis, Long> {
     Optional<ProfileAnalysis> findTopByPlatformAndUsernameOrderByCreatedAtDesc(String platform, String username);
+    Optional<ProfileAnalysis> findByUsername(String username);
+void deleteByUsername(String username);
+    boolean existsByUsername(String username);
+
 }

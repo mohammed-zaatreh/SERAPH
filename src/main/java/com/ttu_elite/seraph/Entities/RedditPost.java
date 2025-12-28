@@ -3,9 +3,17 @@ package com.ttu_elite.seraph.Entities;
 
 import jakarta.persistence.*;
 import jakarta.persistence.Entity;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 
 @Entity
+@Data                      // <--- Adds Getters, Setters, toString, etc.
+@NoArgsConstructor         // <--- Required by JPA
+@AllArgsConstructor        // <--- Handy for one-line creation
+@Builder                   // <--- clean object creation syntax
 public class RedditPost {
 
     @Id

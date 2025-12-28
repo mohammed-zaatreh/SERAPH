@@ -15,38 +15,51 @@ import java.util.Map;
 
 @Component
 public class RedditClient {
-
+    ;
     private final RestClient restClient = RestClient.create();
 
-    @Value("${reddit.clientId}") private String clientId;
-    @Value("${reddit.clientSecret}") private String clientSecret;
-    @Value("${reddit.userAgent}") private String userAgent;
+    @Value("${reddit.clientId}")
+    private String clientId;
 
+    @Value("${reddit.clientSecret}")
+    private String clientSecret;
+
+    @Value("${reddit.userAgent}")
+    private String userAgent;
+    /**
+     * Exchanges Client ID/Secret for a temporary Access Token.
+     */
     public String getAppToken() {
-        String basic = Base64.getEncoder()
-                .encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
+        String authString = clientId + ":" + clientSecret;
+        String basicAuth = Base64.getEncoder().encodeToString(authString.getBytes(StandardCharsets.UTF_8));
 
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
         body.add("grant_type", "client_credentials");
 
-        Map<?, ?> resp = restClient.post()
+        Map response = restClient.post()
                 .uri("https://www.reddit.com/api/v1/access_token")
-                .header(HttpHeaders.AUTHORIZATION, "Basic " + basic)
+                .header(HttpHeaders.AUTHORIZATION, "Basic " + basicAuth)
                 .header(HttpHeaders.USER_AGENT, userAgent)
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .body(body)
                 .retrieve()
                 .body(Map.class);
 
-        Object token = resp.get("access_token");
-        if (token == null) throw new RuntimeException("No access_token from Reddit: " + resp);
-        return token.toString();
+        if (response == null || !response.containsKey("access_token")) {
+            throw new RuntimeException("Failed to retrieve Reddit access token");
+        }
+
+        return response.get("access_token").toString();
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Fetches a page of posts submitted by a specific user.
+     */
     public Map<String, Object> fetchUserSubmitted(String token, String username, String after) {
         String url = "https://oauth.reddit.com/user/" + username + "/submitted?limit=100";
-        if (after != null && !after.isBlank()) url += "&after=" + after;
+        if (after != null && !after.isBlank()) {
+            url += "&after=" + after;
+        }
 
         return restClient.get()
                 .uri(url)
@@ -54,5 +67,4 @@ public class RedditClient {
                 .header(HttpHeaders.USER_AGENT, userAgent)
                 .retrieve()
                 .body(Map.class);
-    }
-}
+    }}
