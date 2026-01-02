@@ -26,23 +26,35 @@ public class RedditAnalyzeService {
     private final EmbeddingRanker embeddingRanker;
     private final ObjectMapper objectMapper;
 
-    private static final double SEMANTIC_THRESHOLD = 0.25;
+    // Tuning Weights (Must add up to 1.0)
+    private static final double WEIGHT_SEMANTIC = 0.7;
+    private static final double WEIGHT_KEYWORD = 0.3;
+    private static final double SEMANTIC_THRESHOLD = 0.15; // Minimum score to matter
 
     // CHANGE RETURN TYPE TO String
     public String analyzeProfile(String profileUrl) {
         try {
             String username = extractUsername(profileUrl);
 
-            // 1. CACHE HIT
-            Optional<ProfileAnalysis> existingProfile = profileRepo.findByUsername(username);
-            if (existingProfile.isPresent()) {
-                log.info("CACHE HIT: Returning full analysis for {}", username);
-                List<RedditPost> posts = postRepo.findAllByUsernameOrderByCreatedUtcDesc(username);
-                // Serialize to JSON String
-                return objectMapper.writeValueAsString(new AnalysisResult(existingProfile.get(), posts));
+            // 1. CACHE HIT (Fetch the LATEST snapshot)
+            // We use the new query: findTop...OrderByCreatedAtDesc
+            Optional<ProfileAnalysis> latestProfile = profileRepo.findTopByUsernameOrderByCreatedAtDesc(username);
+
+            // Logic: If it exists and is recent (e.g., < 24 hours), return it.
+            // If you want "Force" logic, you can check a flag here.
+            if (latestProfile.isPresent()) {
+                ProfileAnalysis profile = latestProfile.get();
+                // Optional: Check if it's too old? if (profile.getCreatedAt()... > 7 days) { ... }
+
+                log.info("SNAPSHOT HIT: Returning latest analysis for {} from {}", username, profile.getCreatedAt());
+
+                // FETCH POSTS BY SNAPSHOT ID (Not Username!)
+                List<RedditPost> posts = postRepo.findAllByAnalysisId(profile.getId());
+
+                return objectMapper.writeValueAsString(new AnalysisResult(profile, posts));
             }
 
-            // 2. FETCH DATA
+            // 2. FETCH DATA (Same as before)
             String token = redditClient.getAppToken();
             List<Map<String, Object>> rawPosts = fetchAllPosts(username, token);
 
@@ -50,24 +62,106 @@ public class RedditAnalyzeService {
                 return "{\"error\": \"EMPTY_PROFILE: No posts found for user: " + username + "\"}";
             }
 
-            // 3. ANALYZE
-            List<RedditPost> analyzedPosts = runSemanticAnalysis(username, rawPosts);
+            // 3. ANALYZE (Hybrid)
+            List<RedditPost> analyzedPosts = runHybridAnalysis(username, rawPosts);
 
-            // 4. SAVE & RETURN
+            // 4. SAVE SNAPSHOT (The New Order of Operations)
+
+            // A. Create & Save the Profile Summary FIRST
+            ProfileAnalysis summary = saveProfileSummary(username, analyzedPosts); // (Helper method that builds the object)
+            summary = profileRepo.save(summary); // Save to generate the ID
+            Long newAnalysisId = summary.getId(); // <--- GRAB THE ID
+
+            // B. Link Posts to this specific Snapshot ID
+            for (RedditPost post : analyzedPosts) {
+                post.setAnalysisId(newAnalysisId); // <--- STAMP THE ID
+            }
+
+            // C. Save Posts
             postRepo.saveAll(analyzedPosts);
-            ProfileAnalysis summary = saveProfileSummary(username, analyzedPosts);
 
-            // Serialize to JSON String
             return objectMapper.writeValueAsString(new AnalysisResult(summary, analyzedPosts));
 
         } catch (Exception e) {
             log.error("Analysis Failed", e);
-            // Return Error String
             return "{\"error\": \"Analysis Failed: " + e.getMessage() + "\"}";
         }
     }
 
-    // 2. Update runSemanticAnalysis method (Replace the whole method with this):
+    private List<RedditPost> runHybridAnalysis(String username, List<Map<String, Object>> rawPosts) {
+        List<RedditPost> results = new ArrayList<>();
+
+        // Extract just the text for batch processing
+        List<String> texts = rawPosts.stream().map(p -> (String) p.get("fullText")).toList();
+
+        // --- STEP A: RUN BOTH MODELS ---
+        // 1. Neural Model (Context/Vibe)
+        Map<String, List<Double>> semanticScores = embeddingRanker.scorePosts(texts);
+
+        // 2. Lexical Model (Keywords)
+        Map<String, List<Double>> keywordScores = bm25Ranker.scorePosts(texts);
+
+        Set<String> categories = semanticScores.keySet();
+
+        // --- STEP B: MERGE SCORES ---
+        for (int i = 0; i < rawPosts.size(); i++) {
+            Map<String, Object> raw = rawPosts.get(i);
+            Map<String, Double> finalPostScores = new HashMap<>();
+
+            for (String cat : categories) {
+                // Get Semantic Score (Default 0.0)
+                List<Double> semList = semanticScores.get(cat);
+                double sScore = (semList != null && i < semList.size()) ? semList.get(i) : 0.0;
+
+                // Get BM25 Score (Default 0.0)
+                List<Double> kwList = keywordScores.get(cat);
+                double kScore = (kwList != null && i < kwList.size()) ? kwList.get(i) : 0.0;
+
+                // HYBRID FORMULA: Weighted Average
+                // If Neural says 0.8 (high risk) and Keyword says 0.0 (no explicit words) -> Result 0.56
+                // If Both say high -> Result is very high.
+                double hybridScore = (sScore * WEIGHT_SEMANTIC) + (kScore * WEIGHT_KEYWORD);
+
+                // Filter Noise
+                if (hybridScore < SEMANTIC_THRESHOLD) hybridScore = 0.0;
+
+                finalPostScores.put(cat, hybridScore);
+            }
+
+            // --- STEP C: BASELINE LOGIC ---
+            // Calculate max risk to see if this is a "normal" post
+            double maxRisk = finalPostScores.entrySet().stream()
+                    .filter(e -> !e.getKey().equals("FUNCTIONAL_BASELINE"))
+                    .mapToDouble(Map.Entry::getValue)
+                    .max().orElse(0.0);
+
+            // If no risk categories were triggered, boost Functional Baseline
+            if (maxRisk == 0.0) {
+                finalPostScores.put("FUNCTIONAL_BASELINE", 0.9);
+            }
+
+            // --- STEP D: RENAME & FORMAT FOR UI ---
+            Map<String, Double> uiScores = new HashMap<>();
+            finalPostScores.forEach((k, v) -> {
+                String uiName = getDisplayName(k);
+                double rounded = Math.round(v * 100.0) / 100.0;
+                uiScores.put(uiName, rounded);
+            });
+
+            RedditPost post = RedditPost.builder()
+                    .username(username)
+                    .redditPostId((String) raw.get("postId"))
+                    .permalink((String) raw.get("permalink"))
+                    .title((String) raw.get("title"))
+                    .content((String) raw.get("text"))
+                    .createdUtc((Long) raw.get("createdUtc"))
+                    .tokens(toJson(uiScores))
+                    .build();
+            results.add(post);
+        }
+        return results;
+    }
+
     private List<RedditPost> runSemanticAnalysis(String username, List<Map<String, Object>> rawPosts) {
         List<RedditPost> results = new ArrayList<>();
         List<String> texts = rawPosts.stream().map(p -> (String) p.get("fullText")).toList();
@@ -294,5 +388,11 @@ public class RedditAnalyzeService {
                 .profilePercentagesJson(toJson(percentages))
                 .createdAt(Instant.now())
                 .build();
+    }
+
+
+    public List<ProfileAnalysis> getProfileHistory(String username) {
+        // Returns the lightweight headers (stats + timestamps) without the heavy post text
+        return profileRepo.findAllByUsernameOrderByCreatedAtDesc(username);
     }
 }

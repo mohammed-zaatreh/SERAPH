@@ -20,6 +20,9 @@ public class RedditPost {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // LINK TO PARENT SNAPSHOT
+    @Column(nullable = false)
+    private Long analysisId; // <--- ADD THIS!
     private String username;
     private String redditPostId;
 

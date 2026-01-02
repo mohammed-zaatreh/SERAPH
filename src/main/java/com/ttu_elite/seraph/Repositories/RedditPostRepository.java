@@ -8,5 +8,7 @@ import java.util.List;
 public interface RedditPostRepository extends JpaRepository<RedditPost, Long> {
     boolean existsByRedditPostId(String redditPostId);
     List<RedditPost> findAllByUsernameOrderByCreatedUtcDesc(String username);
+    List<RedditPost> findAllByAnalysisId(Long analysisId);
+    
 
 }
