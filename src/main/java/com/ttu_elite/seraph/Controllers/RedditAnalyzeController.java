@@ -23,7 +23,7 @@ public class RedditAnalyzeController {
     private final RedditPostRepository postRepo;
 
     // --- ANALYZE (The Eye) ---
-
+    @CrossOrigin(origins = "*")
     @PostMapping("/reddit")
     public ResponseEntity<?> analyzeUser(
             @RequestBody Map<String, String> payload,
@@ -65,6 +65,7 @@ public class RedditAnalyzeController {
 
     // 1. THE ARCHIVE: Get latest snapshot of all tracked targets
     // Endpoint: GET /SERAPH/chronicles
+    @CrossOrigin(origins = "*")
     @GetMapping("/chronicles")
     @Transactional(readOnly = true)
     public ResponseEntity<List<ProfileAnalysis>> getTheArchives() {
@@ -73,6 +74,7 @@ public class RedditAnalyzeController {
 
     // 2. THE TESTAMENT: Get full history for one target
     // Endpoint: GET /SERAPH/chronicles/{username}
+    @CrossOrigin(origins = "*")
     @GetMapping("/chronicles/{username}") // <--- CHANGED for cleaner routing
     @Transactional(readOnly = true)
     public ResponseEntity<List<ProfileAnalysis>> getUserTestament(@PathVariable String username) {
