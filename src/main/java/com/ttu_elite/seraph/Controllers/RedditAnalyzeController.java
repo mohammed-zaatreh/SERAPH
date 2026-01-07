@@ -15,6 +15,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/SERAPH")
+@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class RedditAnalyzeController {
 
