@@ -19,7 +19,7 @@ public class EmbeddingRanker {
     private Predictor<String, float[]> predictor;
     private final Map<String, float[]> categoryVectors = new ConcurrentHashMap<>();
 
-    // UPDATED ANCHORS: Added FUNCTIONAL_BASELINE to explicitly detect normal content
+    // UPDATED ANCHORS: Added FUNCTIONAL_BASELINE to explicitly detect normal content TODO extend the context and perhaps link to a DB of related content for each genre
     private static final Map<String, String> ANCHORS = Map.of(
             "FUNCTIONAL_BASELINE", "Content about daily life, hobbies, work, technology, news, or casual conversation without strong emotion.",
             "SADNESS", "I feel overwhelmed with grief, hopelessness, and deep emotional pain that will not go away.",
